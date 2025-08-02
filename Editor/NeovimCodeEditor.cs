@@ -17,7 +17,6 @@ namespace Neovim.Editor
         private const int ProcessTimeoutMillis = 2000;
 
         private IGenerator m_Generator;
-        private NeovimSettings m_Settings = new();
 
         // because of the "InitializeOnLoad" attribute, this will be called when scripts in the project are recompiled
         static NeovimCodeEditor()
@@ -118,14 +117,6 @@ namespace Neovim.Editor
                 RegenerateProjectFiles();
             }
             EditorGUI.indentLevel--;
-
-            EditorGUILayout.LabelField("Neovim Settings");
-            EditorGUI.indentLevel++;
-            m_Settings.TerminalPath = EditorGUILayout.TextField("Terminal Path", m_Settings.TerminalPath);
-            m_Settings.TerminalArgs = EditorGUILayout.TextField("Terminal Arguments", m_Settings.TerminalArgs);
-            m_Settings.ServerSocketPath = EditorGUILayout.TextField("Server Socket Path", m_Settings.ServerSocketPath);
-
-            EditorGUI.indentLevel--;
         }
 
 
@@ -179,10 +170,9 @@ namespace Neovim.Editor
                 column = 0;
 
             var nvimPath = EditorPrefs.GetString("kScriptsDefaultApp");
-            var socketPath = m_Settings.ServerSocketPath;
-            var terminalPath = m_Settings.TerminalPath;
+            var socketPath = NeovimSettingsProvider.ServerSocketPath;
+            var terminalPath = NeovimSettingsProvider.TerminalPath;
             var isInstanceActive = IsInstanceActive(nvimPath, socketPath);
-            Debug.Log($"socket file exists: {isInstanceActive}");
             var hasInstance = isInstanceActive || CreateInstance(nvimPath, socketPath, terminalPath, filePath);
             return hasInstance && OpenInActiveInstance(nvimPath, socketPath, filePath, line, column);
         }
@@ -191,7 +181,11 @@ namespace Neovim.Editor
         {
             if (Environment.OSVersion.Platform == PlatformID.Unix)
                 return File.Exists(socketPath);
+            return IsNeovimServerResponsive(socketPath, nvimPath);
+        }
 
+        private static bool IsNeovimServerResponsive(string socketPath, string nvimPath)
+        {
             var exprCmd = $"--headless --server {socketPath} --remote-expr \"1\"";
             try
             {
@@ -220,7 +214,6 @@ namespace Neovim.Editor
 
         private static bool CreateInstance(string nvimPath, string socketPath, string terminalPath, string filePath)
         {
-            Debug.Log("Creating instance");
             try
             {
                 var args = $" -- {nvimPath} {filePath} --listen {socketPath}";
@@ -233,7 +226,8 @@ namespace Neovim.Editor
                 serverProc.StartInfo.CreateNoWindow = false;
                 serverProc.StartInfo.UseShellExecute = false;
                 serverProc.Start();
-                if (!serverProc.WaitForExit(ProcessTimeoutMillis) || serverProc.ExitCode != 0)
+
+                if (!WaitForNeovimSocket(socketPath, nvimPath))
                 {
 #if DEBUG
                     Debug.LogError($"[neovim.ide] failed at creating a Neovim server instance: exit code {serverProc.ExitCode}");
@@ -248,8 +242,20 @@ namespace Neovim.Editor
 #endif
                 return false;
             }
-            Debug.Log("Successfully created instance");
             return true;
+        }
+
+        private static bool WaitForNeovimSocket(string socketPath, string nvimPath, int maxRetries = 20, int delayMs = 100)
+        {
+            for (int i = 0; i < maxRetries; i++)
+            {
+                if (IsNeovimServerResponsive(socketPath, nvimPath))
+                    return true;
+
+                System.Threading.Thread.Sleep(delayMs);
+            }
+
+            return false;
         }
 
         private static bool OpenInActiveInstance(
@@ -259,7 +265,6 @@ namespace Neovim.Editor
             int line,
             int column)
         {
-            Debug.Log("Opening in active instance");
             var args = new[]
             {
                 "--headless",
@@ -276,26 +281,8 @@ namespace Neovim.Editor
                 proc.StartInfo.Arguments = argsString;
                 proc.StartInfo.WindowStyle = ProcessWindowStyle.Hidden;
                 proc.StartInfo.CreateNoWindow = true;
-                // TODO: Restore
-                proc.StartInfo.UseShellExecute = false;
-
-                proc.StartInfo.RedirectStandardOutput = true;
-                proc.StartInfo.RedirectStandardError = true;
-
-                Debug.Log($"Executing: {nvimPath} {argsString}");
+                proc.StartInfo.UseShellExecute = true;
                 proc.Start();
-                var output = proc.StandardOutput.ReadToEnd();
-                var error = proc.StandardError.ReadToEnd();
-                proc.WaitForExit();
-                Debug.Log($"stdout: {output}");
-                Debug.Log($"stderr: {error}");
-                if (proc.ExitCode != 0)
-                {
-                    Debug.LogError(
-                        $"[neovim.ide] failed at sending request to open {filePath} to Neovim server instance " +
-                        $"listening to {socketPath}: exit code {proc.ExitCode}");
-                    return false;
-                }
 
                 if (!proc.WaitForExit(ProcessTimeoutMillis) || proc.ExitCode != 0)
                 {
@@ -335,13 +322,13 @@ namespace Neovim.Editor
                         FileName = command,
                         Arguments = "nvim",
                         RedirectStandardOutput = true,
+                        RedirectStandardError = true,
                         UseShellExecute = false,
                         CreateNoWindow = true
                     }
                 };
                 process.Start();
                 var result = process.StandardOutput.ReadLine();
-                process.WaitForExit(ProcessTimeoutMillis);
                 path = File.Exists(result) ? result : null;
                 return path != null;
             }
