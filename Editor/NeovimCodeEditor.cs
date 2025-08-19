@@ -162,6 +162,8 @@ namespace Neovim.Editor
         // The external code editor needs to handle the request to open a file.
         public bool OpenProject(string filePath = "", int line = -1, int column = -1)
         {
+            if (Path.GetExtension(filePath) != ".cs")
+                return false;
             if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
                 return false;
             if (line == -1)
